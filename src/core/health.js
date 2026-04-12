@@ -2,8 +2,56 @@
  * Core health/discovery/launch logic.
  */
 import { getClient, getTargetInfo, evaluate } from '../connection.js';
-import { existsSync } from 'fs';
+import { existsSync, readdirSync, mkdirSync } from 'fs';
 import { execSync, spawn } from 'child_process';
+import os from 'os';
+import path from 'path';
+
+function resolveBrowserCandidates() {
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  return {
+    darwin: [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+      `${home}/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`,
+      `${home}/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge`,
+    ],
+    win32: [
+      `${process.env.PROGRAMFILES}\\Google\\Chrome\\Application\\chrome.exe`,
+      `${process.env['PROGRAMFILES(X86)']}\\Google\\Chrome\\Application\\chrome.exe`,
+      `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`,
+      `${process.env.PROGRAMFILES}\\Microsoft\\Edge\\Application\\msedge.exe`,
+      `${process.env['PROGRAMFILES(X86)']}\\Microsoft\\Edge\\Application\\msedge.exe`,
+      `${process.env.LOCALAPPDATA}\\Microsoft\\Edge\\Application\\msedge.exe`,
+    ],
+    linux: [
+      '/usr/bin/google-chrome',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/chromium',
+      '/usr/bin/chromium-browser',
+      '/snap/bin/chromium',
+      '/usr/bin/microsoft-edge',
+      '/usr/bin/microsoft-edge-stable',
+    ],
+  };
+}
+
+function firstExistingPath(paths = []) {
+  for (const p of paths) {
+    if (p && existsSync(p)) return p;
+  }
+  return null;
+}
+
+function findOnPath(command) {
+  try {
+    const lookup = process.platform === 'win32' ? `where ${command}` : `which ${command}`;
+    const found = execSync(lookup, { timeout: 3000 }).toString().trim().split(/\r?\n/)[0];
+    return found && existsSync(found) ? found : null;
+  } catch {
+    return null;
+  }
+}
 
 export async function healthCheck() {
   await getClient();
@@ -159,10 +207,12 @@ export async function uiState() {
   return { success: true, ...state };
 }
 
-export async function launch({ port, kill_existing } = {}) {
+export async function launch({ port, kill_existing, mode } = {}) {
   const cdpPort = port || 9222;
   const killFirst = kill_existing !== false;
+  const launchMode = mode || 'auto';
   const platform = process.platform;
+  let windowsMsixAppId = null;
 
   const pathMap = {
     darwin: [
@@ -185,16 +235,24 @@ export async function launch({ port, kill_existing } = {}) {
 
   let tvPath = null;
   const candidates = pathMap[platform] || pathMap.linux;
-  for (const p of candidates) {
-    if (p && existsSync(p)) { tvPath = p; break; }
+  if (launchMode !== 'browser') {
+    tvPath = firstExistingPath(candidates);
   }
 
-  if (!tvPath) {
+  if (platform === 'win32') {
     try {
-      const cmd = platform === 'win32' ? 'where TradingView.exe' : 'which tradingview';
-      tvPath = execSync(cmd, { timeout: 3000 }).toString().trim().split('\n')[0];
-      if (tvPath && !existsSync(tvPath)) tvPath = null;
+      const packagesDir = `${process.env.LOCALAPPDATA}\\Packages`;
+      const packageDirs = readdirSync(packagesDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && entry.name.startsWith('TradingView.Desktop_'))
+        .map((entry) => entry.name);
+      if (packageDirs.length > 0) {
+        windowsMsixAppId = `${packageDirs[0]}!TradingView.Desktop`;
+      }
     } catch { /* ignore */ }
+  }
+
+  if (!tvPath && launchMode !== 'browser') {
+    tvPath = findOnPath(platform === 'win32' ? 'TradingView.exe' : 'tradingview');
   }
 
   if (!tvPath && platform === 'darwin') {
@@ -207,11 +265,30 @@ export async function launch({ port, kill_existing } = {}) {
     } catch { /* ignore */ }
   }
 
-  if (!tvPath) {
-    throw new Error(`TradingView not found on ${platform}. Searched: ${candidates.join(', ')}. Launch manually with: /path/to/TradingView --remote-debugging-port=${cdpPort}`);
+  const browserMap = resolveBrowserCandidates();
+  const browserCandidates = browserMap[platform] || browserMap.linux;
+  let browserPath = null;
+  if (launchMode !== 'desktop') {
+    browserPath = firstExistingPath(browserCandidates);
+    if (!browserPath) {
+      const browserCommands = platform === 'win32'
+        ? ['chrome.exe', 'msedge.exe']
+        : ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'microsoft-edge', 'microsoft-edge-stable'];
+      for (const command of browserCommands) {
+        browserPath = findOnPath(command);
+        if (browserPath) break;
+      }
+    }
   }
 
-  if (killFirst) {
+  const shouldUseDesktop = launchMode === 'desktop' || (launchMode === 'auto' && (tvPath || windowsMsixAppId));
+  const shouldUseBrowser = launchMode === 'browser' || (launchMode === 'auto' && !shouldUseDesktop && browserPath);
+
+  if (!shouldUseDesktop && !shouldUseBrowser) {
+    throw new Error(`No supported TradingView launch target found on ${platform}. Searched desktop paths: ${candidates.join(', ')}. Searched browser paths: ${browserCandidates.join(', ')}. You can also launch Chrome manually with --remote-debugging-port=${cdpPort} and open https://www.tradingview.com/chart/`);
+  }
+
+  if (killFirst && shouldUseDesktop) {
     try {
       if (platform === 'win32') execSync('taskkill /F /IM TradingView.exe', { timeout: 5000 });
       else execSync('pkill -f TradingView', { timeout: 5000 });
@@ -219,7 +296,37 @@ export async function launch({ port, kill_existing } = {}) {
     } catch { /* may not be running */ }
   }
 
-  const child = spawn(tvPath, [`--remote-debugging-port=${cdpPort}`], { detached: true, stdio: 'ignore' });
+  let child;
+  let binary;
+  let targetKind;
+  if (shouldUseBrowser) {
+    const browserUrl = 'https://www.tradingview.com/chart/';
+    const profileDir = path.join(os.tmpdir(), `tradingview-mcp-chrome-${cdpPort}`);
+    mkdirSync(profileDir, { recursive: true });
+    const browserArgs = [
+      `--remote-debugging-port=${cdpPort}`,
+      `--user-data-dir=${profileDir}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--new-window',
+      browserUrl,
+    ];
+    child = spawn(browserPath, browserArgs, { detached: true, stdio: 'ignore' });
+    binary = browserPath;
+    targetKind = 'browser';
+  } else if (platform === 'win32' && windowsMsixAppId && !tvPath) {
+    const command = `set "ELECTRON_EXTRA_LAUNCH_ARGS=--remote-debugging-port=${cdpPort}" && explorer.exe shell:AppsFolder\\${windowsMsixAppId}`;
+    child = spawn('cmd.exe', ['/d', '/s', '/c', command], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    binary = `shell:AppsFolder\\${windowsMsixAppId}`;
+    targetKind = 'desktop-msix';
+  } else {
+    child = spawn(tvPath, [`--remote-debugging-port=${cdpPort}`], { detached: true, stdio: 'ignore' });
+    binary = tvPath;
+    targetKind = 'desktop';
+  }
   child.unref();
 
   for (let i = 0; i < 15; i++) {
@@ -236,7 +343,7 @@ export async function launch({ port, kill_existing } = {}) {
       if (ready) {
         const info = JSON.parse(ready);
         return {
-          success: true, platform, binary: tvPath, pid: child.pid,
+          success: true, platform, mode: targetKind, binary, pid: child.pid,
           cdp_port: cdpPort, cdp_url: `http://localhost:${cdpPort}`,
           browser: info.Browser, user_agent: info['User-Agent'],
         };
@@ -245,7 +352,15 @@ export async function launch({ port, kill_existing } = {}) {
   }
 
   return {
-    success: true, platform, binary: tvPath, pid: child.pid, cdp_port: cdpPort, cdp_ready: false,
-    warning: 'TradingView launched but CDP not responding yet. It may still be loading. Try tv_health_check in a few seconds.',
+    success: true,
+    platform,
+    mode: targetKind,
+    binary,
+    pid: child.pid,
+    cdp_port: cdpPort,
+    cdp_ready: false,
+    warning: shouldUseBrowser
+      ? 'Browser launched but CDP not responding yet. Wait a few seconds for TradingView Web to load, then try tv_health_check.'
+      : 'TradingView launched but CDP not responding yet. It may still be loading. Try tv_health_check in a few seconds.',
   };
 }

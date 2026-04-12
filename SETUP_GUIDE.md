@@ -31,12 +31,26 @@ Replace `<INSTALL_PATH>` with the actual path where the repo was cloned (e.g., `
 
 If the config file already exists and has other servers, merge the `tradingview` entry into the existing `mcpServers` object. Do not overwrite other servers.
 
-## Step 3: Launch TradingView Desktop
+## Step 3: Launch TradingView
 
-TradingView Desktop must be running with Chrome DevTools Protocol enabled.
+TradingView Desktop or a Chromium browser with TradingView Web must be running with Chrome DevTools Protocol enabled.
+
+**Recommended on Windows:** use browser mode first. The current TradingView Desktop Windows build is often distributed as MSIX / Store, which may fail to expose CDP reliably.
 
 **Auto-detect and launch (recommended):**
-After the MCP server is connected, use the `tv_launch` tool — it auto-detects TradingView on Mac, Windows, and Linux.
+After the MCP server is connected, use the `tv_launch` tool — it auto-detects TradingView Desktop on Mac, Windows, and Linux, and can also launch browser mode.
+
+**Browser mode (recommended on Windows):**
+
+```text
+Use tv_launch with mode=browser
+```
+
+CLI equivalent:
+
+```bash
+node src/cli/index.js launch --mode browser
+```
 
 **Manual launch by platform:**
 
@@ -54,6 +68,11 @@ Linux:
 ```bash
 /opt/TradingView/tradingview --remote-debugging-port=9222
 # or: tradingview --remote-debugging-port=9222
+```
+
+Browser:
+```bash
+/path/to/chrome --remote-debugging-port=9222 --new-window https://www.tradingview.com/chart/
 ```
 
 ## Step 4: Restart Claude Code
@@ -94,8 +113,9 @@ Then `tv status`, `tv quote`, `tv pine compile`, etc. work from anywhere.
 
 | Problem | Solution |
 |---------|----------|
-| `cdp_connected: false` | Launch TradingView with `--remote-debugging-port=9222` |
+| `cdp_connected: false` | Launch TradingView or Chrome with `--remote-debugging-port=9222` |
 | `ECONNREFUSED` | TradingView isn't running or port 9222 is blocked |
+| Windows MSIX desktop won't connect | Use `tv_launch` with `mode=browser` or `node src/cli/index.js launch --mode browser` |
 | MCP server not showing in Claude Code | Check `~/.claude/.mcp.json` syntax, restart Claude Code |
 | `tv` command not found | Run `npm link` from the project directory |
 | Tools return stale data | TradingView may still be loading — wait a few seconds |
