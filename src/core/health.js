@@ -1,7 +1,7 @@
 /**
  * Core health/discovery/launch logic.
  */
-import { getClient, getTargetInfo, evaluate } from '../connection.js';
+import { getClient, getTargetInfo, evaluate, getChartSnapshot } from '../connection.js';
 import { existsSync, readdirSync, mkdirSync } from 'fs';
 import { execSync, spawn } from 'child_process';
 import os from 'os';
@@ -56,6 +56,7 @@ function findOnPath(command) {
 export async function healthCheck() {
   await getClient();
   const target = await getTargetInfo();
+  const snapshot = await getChartSnapshot();
 
   const state = await evaluate(`
     (function() {
@@ -65,11 +66,18 @@ export async function healthCheck() {
         result.symbol = chart.symbol();
         result.resolution = chart.resolution();
         result.chartType = chart.chartType();
+        try {
+          var ext = chart.symbolExt ? chart.symbolExt() : null;
+          result.description = ext && ext.description ? ext.description : '';
+        } catch (e) {
+          result.description = '';
+        }
         result.apiAvailable = true;
       } catch(e) {
         result.symbol = 'unknown';
         result.resolution = 'unknown';
         result.chartType = null;
+        result.description = '';
         result.apiAvailable = false;
         result.apiError = e.message;
       }
@@ -77,16 +85,57 @@ export async function healthCheck() {
     })()
   `);
 
+  const normalizeSymbol = (value) => String(value || '').toUpperCase().split(':').pop();
+  const normalizeText = (value) => String(value || '')
+    .replace(/^[A-Z]/, '')
+    .replace(/[▲▼+\-0-9.,% ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+  const symbolCore = normalizeSymbol(state?.symbol || snapshot?.mainSeriesSymbol || '');
+  const visibleCore = normalizeSymbol(snapshot?.visibleSymbolButtonText || '');
+  const descriptionCore = normalizeText(state?.description || '');
+  const legendCore = normalizeText(snapshot?.legendTitle || '');
+  const legendMatches =
+    !legendCore
+    || !descriptionCore
+    || legendCore.includes(descriptionCore)
+    || descriptionCore.includes(legendCore)
+    || legendCore.includes(symbolCore)
+    || (visibleCore && legendCore.includes(visibleCore));
+
   return {
     success: true,
     cdp_connected: true,
     target_id: target.id,
     target_url: target.url,
-    target_title: target.title,
+    cdp_target_title: target.title,
+    target_title: snapshot?.title || target.title,
+    document_title: snapshot?.title || target.title,
+    visible_symbol_button: snapshot?.visibleSymbolButtonText || '',
+    legend_title: snapshot?.legendTitle || '',
+    has_blocking_dialog: snapshot?.hasBlockingDialog ?? false,
+    dialog_title: snapshot?.dialogTitle || '',
     chart_symbol: state?.symbol || 'unknown',
+    main_series_symbol: snapshot?.mainSeriesSymbol || '',
+    chart_description: state?.description || '',
     chart_resolution: state?.resolution || 'unknown',
     chart_type: state?.chartType ?? null,
     api_available: state?.apiAvailable ?? false,
+    symbol_resolving_active: snapshot?.symbolResolvingActive ?? null,
+    chart_loading: snapshot?.chartLoading ?? null,
+    series_loaded: snapshot?.seriesLoaded ?? null,
+    series_completed: snapshot?.seriesCompleted ?? null,
+    series_status: snapshot?.seriesStatus ?? null,
+    legend_matches_chart: legendMatches,
+    chart_consistent: [
+      state?.symbol || '',
+      snapshot?.mainSeriesSymbol || '',
+      snapshot?.visibleSymbolButtonText || '',
+    ].filter(Boolean).every((value, _, arr) => {
+      const normalized = arr.map((s) => String(s).toUpperCase().split(':').pop());
+      return normalized.every((s) => s === normalized[0]);
+    }),
   };
 }
 
@@ -207,12 +256,14 @@ export async function uiState() {
   return { success: true, ...state };
 }
 
-export async function launch({ port, kill_existing, mode } = {}) {
+export async function launch({ port, kill_existing, mode, browser_path, browser_profile_dir } = {}) {
   const cdpPort = port || 9222;
   const killFirst = kill_existing !== false;
   const launchMode = mode || 'auto';
   const platform = process.platform;
   let windowsMsixAppId = null;
+  const explicitBrowserPath = browser_path || process.env.TV_MCP_BROWSER_PATH || null;
+  const explicitBrowserProfileDir = browser_profile_dir || process.env.TV_MCP_BROWSER_PROFILE_DIR || null;
 
   const pathMap = {
     darwin: [
@@ -269,14 +320,21 @@ export async function launch({ port, kill_existing, mode } = {}) {
   const browserCandidates = browserMap[platform] || browserMap.linux;
   let browserPath = null;
   if (launchMode !== 'desktop') {
-    browserPath = firstExistingPath(browserCandidates);
-    if (!browserPath) {
-      const browserCommands = platform === 'win32'
-        ? ['chrome.exe', 'msedge.exe']
-        : ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'microsoft-edge', 'microsoft-edge-stable'];
-      for (const command of browserCommands) {
-        browserPath = findOnPath(command);
-        if (browserPath) break;
+    if (explicitBrowserPath) {
+      if (!existsSync(explicitBrowserPath)) {
+        throw new Error(`Configured browser_path does not exist: ${explicitBrowserPath}`);
+      }
+      browserPath = explicitBrowserPath;
+    } else {
+      browserPath = firstExistingPath(browserCandidates);
+      if (!browserPath) {
+        const browserCommands = platform === 'win32'
+          ? ['chrome.exe', 'msedge.exe']
+          : ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'microsoft-edge', 'microsoft-edge-stable'];
+        for (const command of browserCommands) {
+          browserPath = findOnPath(command);
+          if (browserPath) break;
+        }
       }
     }
   }
@@ -299,9 +357,10 @@ export async function launch({ port, kill_existing, mode } = {}) {
   let child;
   let binary;
   let targetKind;
+  let profileDir = null;
   if (shouldUseBrowser) {
     const browserUrl = 'https://www.tradingview.com/chart/';
-    const profileDir = path.join(os.tmpdir(), `tradingview-mcp-chrome-${cdpPort}`);
+    profileDir = explicitBrowserProfileDir || path.join(os.tmpdir(), `tradingview-mcp-chrome-${cdpPort}`);
     mkdirSync(profileDir, { recursive: true });
     const browserArgs = [
       `--remote-debugging-port=${cdpPort}`,
@@ -346,6 +405,8 @@ export async function launch({ port, kill_existing, mode } = {}) {
           success: true, platform, mode: targetKind, binary, pid: child.pid,
           cdp_port: cdpPort, cdp_url: `http://localhost:${cdpPort}`,
           browser: info.Browser, user_agent: info['User-Agent'],
+          profile_dir: profileDir || undefined,
+          browser_path_source: explicitBrowserPath ? 'explicit' : 'auto-detected',
         };
       }
     } catch { /* retry */ }
@@ -358,6 +419,8 @@ export async function launch({ port, kill_existing, mode } = {}) {
     binary,
     pid: child.pid,
     cdp_port: cdpPort,
+    profile_dir: profileDir || undefined,
+    browser_path_source: explicitBrowserPath ? 'explicit' : (shouldUseBrowser ? 'auto-detected' : undefined),
     cdp_ready: false,
     warning: shouldUseBrowser
       ? 'Browser launched but CDP not responding yet. Wait a few seconds for TradingView Web to load, then try tv_health_check.'

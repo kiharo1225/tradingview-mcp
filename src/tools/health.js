@@ -22,8 +22,10 @@ export function registerHealthTools(server) {
     port: z.coerce.number().optional().describe('CDP port (default 9222)'),
     mode: z.enum(['auto', 'desktop', 'browser']).optional().describe('Launch mode: auto, desktop, or browser (default auto)'),
     kill_existing: z.coerce.boolean().optional().describe('Kill existing TradingView instances first (default true)'),
-  }, async ({ port, mode, kill_existing }) => {
-    try { return jsonResult(await core.launch({ port, mode, kill_existing })); }
+    browser_path: z.string().optional().describe('Optional explicit Chromium executable path. Useful for version-pinned browser binaries such as Chrome for Testing.'),
+    browser_profile_dir: z.string().optional().describe('Optional explicit browser profile directory for browser mode. Useful when you want a stable reusable profile.'),
+  }, async ({ port, mode, kill_existing, browser_path, browser_profile_dir }) => {
+    try { return jsonResult(await core.launch({ port, mode, kill_existing, browser_path, browser_profile_dir })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 }

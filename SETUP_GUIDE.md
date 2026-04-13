@@ -52,6 +52,28 @@ CLI equivalent:
 node src/cli/index.js launch --mode browser
 ```
 
+**Version-pinned browser binary (recommended when you want reproducibility):**
+
+```bash
+node src/cli/index.js launch --mode browser --browser-path "/path/to/chrome-or-edge"
+```
+
+You can also pin the browser profile directory:
+
+```bash
+node src/cli/index.js launch --mode browser --browser-path "/path/to/chrome-or-edge" --browser-profile-dir "/path/to/profile"
+```
+
+Environment variable equivalent:
+
+```bash
+TV_MCP_BROWSER_PATH=/path/to/chrome-or-edge
+TV_MCP_BROWSER_PROFILE_DIR=/path/to/profile
+node src/cli/index.js launch --mode browser
+```
+
+This is useful when you want to run a known-good browser binary, such as Chrome for Testing, instead of a normally auto-updated local Chrome / Edge install.
+
 **Manual launch by platform:**
 
 Mac:
@@ -98,6 +120,20 @@ Use the `tv_health_check` tool. Expected response:
 
 If `cdp_connected: false`, TradingView is not running with `--remote-debugging-port=9222`.
 
+For browser mode, you can also run a lightweight smoke check:
+
+```bash
+npm run smoke:browser
+```
+
+This verifies:
+
+- `status`
+- `quote`
+- `ohlcv --summary` equivalent
+
+and prints a compact JSON snapshot that is useful for recording a known-good browser / profile combination.
+
 ## Step 6: Install CLI (Optional)
 
 To use the `tv` CLI command globally:
@@ -116,6 +152,7 @@ Then `tv status`, `tv quote`, `tv pine compile`, etc. work from anywhere.
 | `cdp_connected: false` | Launch TradingView or Chrome with `--remote-debugging-port=9222` |
 | `ECONNREFUSED` | TradingView isn't running or port 9222 is blocked |
 | Windows MSIX desktop won't connect | Use `tv_launch` with `mode=browser` or `node src/cli/index.js launch --mode browser` |
+| You want browser-mode reproducibility | Use `--browser-path` and optionally `--browser-profile-dir`, then record the browser version and run `npm run smoke:browser` |
 | MCP server not showing in Claude Code | Check `~/.claude/.mcp.json` syntax, restart Claude Code |
 | `tv` command not found | Run `npm link` from the project directory |
 | Tools return stale data | TradingView may still be loading — wait a few seconds |

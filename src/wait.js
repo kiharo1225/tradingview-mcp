@@ -5,7 +5,7 @@ const POLL_INTERVAL = 200;
 
 export async function waitForChartReady(expectedSymbol = null, expectedTf = null, timeout = DEFAULT_TIMEOUT) {
   const start = Date.now();
-  let lastBarSignature = '';
+  let lastReadySignature = '';
   let stableCount = 0;
 
   while (Date.now() - start < timeout) {
@@ -20,6 +20,11 @@ export async function waitForChartReady(expectedSymbol = null, expectedTf = null
         var currentResolution = '';
         var barCount = -1;
         var lastBarTime = null;
+        var symbolResolvingActive = null;
+        var seriesLoaded = null;
+        var seriesCompleted = null;
+        var seriesStatus = null;
+        var chartLoading = null;
         try {
           var chart = window.TradingViewApi && window.TradingViewApi._activeChartWidgetWV
             ? window.TradingViewApi._activeChartWidgetWV.value()
@@ -39,6 +44,36 @@ export async function waitForChartReady(expectedSymbol = null, expectedTf = null
                 if (lastBar && lastBar.length > 0) lastBarTime = lastBar[0];
               }
             }
+            if (bars && chart._chartWidget && chart._chartWidget.model) {
+              var mainSeries = chart._chartWidget.model().mainSeries();
+              if (mainSeries && mainSeries._symbolResolvingActive != null) {
+                symbolResolvingActive = typeof mainSeries._symbolResolvingActive.value === 'function'
+                  ? mainSeries._symbolResolvingActive.value()
+                  : !!mainSeries._symbolResolvingActive;
+              } else if (mainSeries && typeof mainSeries.symbolResolvingActive === 'function') {
+                symbolResolvingActive = !!mainSeries.symbolResolvingActive();
+              }
+              if (mainSeries && typeof mainSeries.isLoading === 'function') {
+                chartLoading = !!mainSeries.isLoading();
+              }
+              if (mainSeries && mainSeries._seriesLoaded != null) {
+                seriesLoaded = typeof mainSeries._seriesLoaded.value === 'function'
+                  ? mainSeries._seriesLoaded.value()
+                  : !!mainSeries._seriesLoaded;
+              }
+              if (mainSeries && mainSeries._seriesCompleted != null) {
+                seriesCompleted = typeof mainSeries._seriesCompleted.value === 'function'
+                  ? mainSeries._seriesCompleted.value()
+                  : !!mainSeries._seriesCompleted;
+              }
+              if (mainSeries && mainSeries._seriesStatus != null) {
+                seriesStatus = typeof mainSeries._seriesStatus.value === 'function'
+                  ? mainSeries._seriesStatus.value()
+                  : mainSeries._seriesStatus;
+              } else if (mainSeries && typeof mainSeries.status === 'function') {
+                seriesStatus = mainSeries.status();
+              }
+            }
           }
         } catch (e) {}
 
@@ -50,12 +85,20 @@ export async function waitForChartReady(expectedSymbol = null, expectedTf = null
           } catch (e) {}
         }
 
+        var hasUsableChartData = !!currentSymbol && barCount > 0 && lastBarTime != null;
+
         return {
           isLoading: !!isLoading,
+          hasUsableChartData: hasUsableChartData,
           barCount: barCount,
           currentSymbol: currentSymbol,
           currentResolution: currentResolution,
           lastBarTime: lastBarTime,
+          symbolResolvingActive: symbolResolvingActive,
+          seriesLoaded: seriesLoaded,
+          seriesCompleted: seriesCompleted,
+          seriesStatus: seriesStatus,
+          chartLoading: chartLoading,
         };
       })()
     `);
@@ -65,8 +108,8 @@ export async function waitForChartReady(expectedSymbol = null, expectedTf = null
       continue;
     }
 
-    // Not ready if still loading
-    if (state.isLoading) {
+    // Some browser-mode pages keep generic "loading" nodes mounted even when chart data is already usable.
+    if (state.isLoading && !state.hasUsableChartData) {
       stableCount = 0;
       await new Promise(r => setTimeout(r, POLL_INTERVAL));
       continue;
@@ -92,13 +135,25 @@ export async function waitForChartReady(expectedSymbol = null, expectedTf = null
       }
     }
 
-    const barSignature = `${state.barCount}:${state.lastBarTime}:${state.currentSymbol}:${state.currentResolution}`;
-    if (barSignature === lastBarSignature && state.barCount > 0 && state.lastBarTime != null) {
+    if (state.symbolResolvingActive === true) {
+      stableCount = 0;
+      await new Promise(r => setTimeout(r, POLL_INTERVAL));
+      continue;
+    }
+
+    if (state.chartLoading === true || state.seriesLoaded === false || state.seriesCompleted === false) {
+      stableCount = 0;
+      await new Promise(r => setTimeout(r, POLL_INTERVAL));
+      continue;
+    }
+
+    const readySignature = `${state.currentSymbol}:${state.currentResolution}:${state.barCount}`;
+    if (readySignature === lastReadySignature && state.barCount > 0 && state.lastBarTime != null) {
       stableCount++;
     } else {
       stableCount = 0;
     }
-    lastBarSignature = barSignature;
+    lastReadySignature = readySignature;
 
     if (stableCount >= 2) {
       return true;

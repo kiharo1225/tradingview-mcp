@@ -69,7 +69,8 @@ export async function add({ symbol }) {
   // First ensure watchlist panel is open
   const panelState = await evaluate(`
     (function() {
-      var btn = document.querySelector('[data-name="base-watchlist-widget-button"]')
+      var btn = document.querySelector('[data-name="base"]')
+        || document.querySelector('[data-name="base-watchlist-widget-button"]')
         || document.querySelector('[aria-label*="Watchlist"]');
       if (!btn) return { error: 'Watchlist button not found' };
       var isActive = btn.getAttribute('aria-pressed') === 'true'
@@ -81,38 +82,56 @@ export async function add({ symbol }) {
   `);
 
   if (panelState?.error) throw new Error(panelState.error);
-  if (panelState?.opened) await new Promise(r => setTimeout(r, 500));
+  if (panelState?.opened) await new Promise(r => setTimeout(r, 1000));
 
   // Click the "Add symbol" button (various selectors)
   const addClicked = await evaluate(`
     (function() {
+      var container = document.querySelector('[class*="layout__area--right"]')
+        || document.querySelector('[data-name="widgetbar-pages-with-tabs"]')
+        || document.querySelector('[data-name="widgetbar-wrap"]');
+
       var selectors = [
         '[data-name="add-symbol-button"]',
+        '[data-name*="add-symbol"]',
+        '[data-name*="watchlist"]',
         '[aria-label="Add symbol"]',
         '[aria-label*="Add symbol"]',
+        '[aria-label*="Watchlist"]',
         'button[class*="addSymbol"]',
+        'button[class*="watchlist"]',
       ];
       for (var s = 0; s < selectors.length; s++) {
-        var btn = document.querySelector(selectors[s]);
+        var btn = (container || document).querySelector(selectors[s]);
         if (btn && btn.offsetParent !== null) { btn.click(); return { found: true, selector: selectors[s] }; }
       }
-      // Fallback: find + button in right panel
-      var container = document.querySelector('[class*="layout__area--right"]');
+
+      // Fallback: find candidate buttons in the right panel
       if (container) {
-        var buttons = container.querySelectorAll('button');
+        var buttons = container.querySelectorAll('button,[role="button"]');
         for (var i = 0; i < buttons.length; i++) {
+          var text = buttons[i].textContent.trim();
           var ariaLabel = buttons[i].getAttribute('aria-label') || '';
-          if (/add.*symbol/i.test(ariaLabel) || buttons[i].textContent.trim() === '+') {
+          var dataName = buttons[i].getAttribute('data-name') || '';
+          if (/add.*symbol|create.*watchlist|watchlist/i.test(ariaLabel) || /add.*symbol|watchlist/i.test(dataName) || text === '+') {
             buttons[i].click();
-            return { found: true, method: 'fallback' };
+            return { found: true, method: 'fallback', text: text, aria: ariaLabel, data_name: dataName };
           }
         }
+
+        return {
+          found: false,
+          panel_text: (container.textContent || '').trim().slice(0, 200),
+          visible_button_count: buttons.length,
+        };
       }
-      return { found: false };
+      return { found: false, panel_text: '', visible_button_count: 0 };
     })()
   `);
 
-  if (!addClicked?.found) throw new Error('Add symbol button not found in watchlist panel');
+  if (!addClicked?.found) {
+    throw new Error(`Add symbol button not found in watchlist panel (buttons=${addClicked?.visible_button_count || 0}, panel="${addClicked?.panel_text || ''}")`);
+  }
   await new Promise(r => setTimeout(r, 300));
 
   // Type the symbol into the search input
@@ -128,5 +147,29 @@ export async function add({ symbol }) {
   await c.Input.dispatchKeyEvent({ type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   await c.Input.dispatchKeyEvent({ type: 'keyUp', key: 'Escape', code: 'Escape' });
 
-  return { success: true, symbol, action: 'added' };
+  await new Promise(r => setTimeout(r, 1200));
+
+  const verification = await evaluate(`
+    (function() {
+      var container = document.querySelector('.widgetbar-widget-watchlist')
+        || document.querySelector('[class*="watchlist"]');
+      var text = container ? (container.textContent || '').trim() : '';
+      var hasRows = false;
+      try {
+        hasRows = !!container && !!container.querySelector('[data-symbol-full], [data-symbol], [role="row"], [class*="row"]');
+      } catch(e) {}
+      return {
+        has_rows: hasRows,
+        panel_text: text.slice(0, 200),
+      };
+    })()
+  `);
+
+  return {
+    success: true,
+    symbol,
+    action: 'added',
+    watchlist_visible_rows: !!verification?.has_rows,
+    watchlist_panel_text: verification?.panel_text || '',
+  };
 }

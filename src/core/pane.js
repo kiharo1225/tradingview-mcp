@@ -3,6 +3,7 @@
  * Controls multi-chart layouts (split panes) in TradingView.
  */
 import { evaluate, evaluateAsync, getClient, safeString } from '../connection.js';
+import { waitForChartReady } from '../wait.js';
 
 const CWC = 'window.TradingViewApi._chartWidgetCollection';
 
@@ -145,12 +146,54 @@ export async function setSymbol({ index, symbol }) {
   await evaluateAsync(`
     (function() {
       var chart = window.TradingViewApi._activeChartWidgetWV.value();
-      return new Promise(function(resolve) {
-        chart.setSymbol(${safeString(symbol)}, {});
-        setTimeout(resolve, 500);
-      });
+      var result = chart.setSymbol(${safeString(symbol)}, {});
+      if (result && typeof result.then === 'function') {
+        return Promise.race([
+          result.then(function() { return true; }),
+          new Promise(function(resolve) { setTimeout(function() { resolve(false); }, 3000); }),
+        ]);
+      }
+      return new Promise(function(resolve) { setTimeout(function() { resolve(true); }, 500); });
     })()
   `);
 
-  return { success: true, index: idx, symbol };
+  let ready = await waitForChartReady(symbol);
+  let reloadUsed = false;
+  if (!ready) {
+    const shouldReload = await evaluate(`
+      (function() {
+        var chart = window.TradingViewApi._activeChartWidgetWV.value();
+        var currentSymbol = '';
+        var mainSeriesSymbol = '';
+        var symbolResolvingActive = null;
+        var chartLoading = null;
+        var seriesLoaded = null;
+        var seriesCompleted = null;
+        try {
+          currentSymbol = chart.symbol ? String(chart.symbol() || '') : '';
+          var mainSeries = chart._chartWidget && chart._chartWidget.model ? chart._chartWidget.model().mainSeries() : null;
+          if (mainSeries) {
+            if (typeof mainSeries.symbol === 'function') mainSeriesSymbol = String(mainSeries.symbol() || '');
+            if (typeof mainSeries.isLoading === 'function') chartLoading = !!mainSeries.isLoading();
+            if (mainSeries._symbolResolvingActive != null) symbolResolvingActive = typeof mainSeries._symbolResolvingActive.value === 'function' ? mainSeries._symbolResolvingActive.value() : !!mainSeries._symbolResolvingActive;
+            if (mainSeries._seriesLoaded != null) seriesLoaded = typeof mainSeries._seriesLoaded.value === 'function' ? mainSeries._seriesLoaded.value() : !!mainSeries._seriesLoaded;
+            if (mainSeries._seriesCompleted != null) seriesCompleted = typeof mainSeries._seriesCompleted.value === 'function' ? mainSeries._seriesCompleted.value() : !!mainSeries._seriesCompleted;
+          }
+        } catch (e) {}
+        function norm(v) { return String(v || '').toUpperCase().split(':').pop(); }
+        var expected = norm(${safeString(symbol)});
+        var matches = norm(currentSymbol) === expected || norm(mainSeriesSymbol) === expected;
+        var stuck = symbolResolvingActive === true || chartLoading === true || seriesLoaded === false || seriesCompleted === false;
+        return matches && stuck;
+      })()
+    `);
+    if (shouldReload) {
+      await evaluateAsync(`(function() { setTimeout(function() { window.location.reload(); }, 0); return true; })()`);
+      await new Promise(r => setTimeout(r, 12000));
+      ready = await waitForChartReady(symbol, null, 30000);
+      reloadUsed = ready;
+    }
+  }
+
+  return { success: true, index: idx, symbol, reload_used: reloadUsed, chart_ready: ready };
 }

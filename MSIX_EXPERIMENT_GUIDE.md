@@ -1,5 +1,8 @@
 # TradingView MSIX 検証手順書
 
+> [!WARNING]
+> この文書は **本流のセットアップ手順ではなく、調査用の実験メモ** です。通常の Windows 利用では browser モードを優先してください。
+
 この手順書は、TradingView の Windows 配布が MSIX 形式になっている前提で、Chrome DevTools Protocol（CDP, `--remote-debugging-port=9222`）を有効化できる余地があるかを実験的に検証するためのものです。
 
 目的は、次の 3 つを切り分けることです。

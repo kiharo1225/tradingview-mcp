@@ -126,6 +126,32 @@ node src/cli/index.js launch --mode browser
 
 このモードは Chrome / Edge を `https://www.tradingview.com/chart/` 付きで起動し、既存の CDP 接続ロジックをそのまま使います。専用の一時プロファイルで起動するため、既存の Chrome セッションに引数が吸われにくく、Windows の現行 MSIX 版で詰まる場合の正式な代替ルートとして使えます。
 
+browser モードで固定した browser binary を使いたい場合:
+
+```bash
+node src/cli/index.js launch --mode browser --browser-path "/path/to/chrome-or-edge"
+```
+
+または環境変数:
+
+```bash
+TV_MCP_BROWSER_PATH=/path/to/chrome-or-edge
+TV_MCP_BROWSER_PROFILE_DIR=/path/to/profile
+node src/cli/index.js launch --mode browser
+```
+
+用途:
+
+- 自動更新される通常の Chrome / Edge ではなく、確認済みの browser binary を明示して使いたい
+- 専用 profile を固定して、毎回同じ browser state に近づけたい
+- Chrome for Testing のような versioned binary を差し込みたい
+
+補足:
+
+- browser 側のバージョン固定は Desktop `.exe` の固定と完全には同じではありません
+- browser binary 自体は固定できても、TradingView Web の配信内容はサーバー側更新の影響を受けます
+- そのため browser モードでは「固定 binary + 専用 profile + 動作確認日の記録」で再現性を上げる運用を推奨します
+
 **または任意のプラットフォームで手動起動:**
 ```bash
 /path/to/TradingView --remote-debugging-port=9222
@@ -163,11 +189,53 @@ Windows + browser モードで確認済みのコマンド:
 - `node src/cli/index.js screenshot -r chart`
 - `node src/cli/index.js symbol <ticker>`
 - `node src/cli/index.js timeframe <resolution>`
+- `node src/cli/index.js watchlist get`
+- `node src/cli/index.js watchlist add <symbol>` の一部
+- `node src/cli/index.js indicator get <entity_id>`
+- `node src/cli/index.js indicator toggle <entity_id>`
+- `node src/cli/index.js values`
+- `node src/cli/index.js pane list`
+- `node src/cli/index.js tab list`
+- `node src/cli/index.js layout list`
+- `node src/cli/index.js draw list`
+- `node src/cli/index.js pine get`
+- `node src/cli/index.js pine errors`
+- `node src/cli/index.js pine console`
+- `node src/cli/index.js stream quote`
+- `node src/cli/index.js stream bars`
+
+browser モードで部分的に確認済み / 条件つきのコマンド:
+
+- `node src/cli/index.js watchlist add <symbol>`
+  - 現在の右ペインが watchlist ビューであることが前提です
+  - 現在は `watchlist_visible_rows` も返し、実際に watchlist 側へ表示反映できたかの手がかりを返します
+- `node src/cli/index.js indicator add <name>`
+- `node src/cli/index.js indicator remove <entity_id>`
+  - mutation 自体は通りますが、`state` の `studies` 一覧はタイミングにより古い entity が残って見える場合があります
+- `batchRun(get_ohlcv)`
+  - 代表ケースでは成功済みですが、browser モードでは still slower than ideal です
+- `batchRun(screenshot)`
+  - 成功確認済みです
+
+browser モードで未確認または制約が強いもの:
+
+- `node src/cli/index.js alert create`
+  - account state を変更するため慎重に扱っています
+- `node src/cli/index.js alert delete --all`
+  - 手動確認前提の DOM fallback です
+- `node src/cli/index.js layout switch <name>`
+  - 保存済み layout がない環境では未確認です
+- replay 系
+  - account / paywall の影響を受けます
 
 補足:
 
-- `symbol` / `timeframe` 変更後、`chart_ready` は `false` を返す場合があります。
-- ただし実機確認では、その後の `status` に変更内容は反映されました。
+- `chart_ready` の戻り値は改善済みですが、環境やページ状態によってはまだ差が出る可能性があります。
+- `pine get`, `pine errors`, `pine console` は browser モードでも read 系として確認済みです。
+- `symbol` / `pane symbol` は、symbol search や既知のダイアログが残っている session でも recovery を試み、必要に応じて reload fallback を使います。
+- 複数の TradingView page / tab / window が同時にある場合でも、接続時に複数 target を probe して、見ている chart に近い target を優先するようにしています。
+- `status` と `quote` には `visible_symbol_button`, `main_series_symbol`, `legend_title`, `legend_matches_chart`, `legend_matches_symbol`, `chart_loading`, `series_loaded`, `series_completed` などの診断情報が含まれます。browser モードで違和感があるときは、まずこれらを確認してください。
+- TradingView 側の UI 更新が遅れると、データ自体は正しくても legend や説明ラベルだけ古い銘柄名のまま残る場合があります。このため、README の確認済みは「データ面の一致」と「可視 UI の一致」を分けて見ています。現在は best-effort で legend 同期も試みていますが、環境によっては一時的に stale 表示が残る可能性があります。
 
 ### 3. Claude Code に追加
 

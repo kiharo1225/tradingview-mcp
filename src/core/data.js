@@ -250,9 +250,82 @@ export async function getQuote({ symbol } = {}) {
       if (!sym) { try { sym = api.symbol(); } catch(e) {} }
       if (!sym) { try { sym = api.symbolExt().symbol; } catch(e) {} }
       var ext = {};
+      var apiSymbol = '';
+      var mainSeriesSymbol = '';
+      var visibleSymbol = '';
+      var legendTitle = '';
+      var chartLoading = null;
+      var seriesLoaded = null;
+      var seriesCompleted = null;
+      var seriesStatus = null;
+      var symbolResolvingActive = null;
       try { ext = api.symbolExt() || {}; } catch(e) {}
+      try { apiSymbol = api.symbol ? String(api.symbol() || '') : ''; } catch(e) {}
+      try {
+        var mainSeries = api._chartWidget && api._chartWidget.model ? api._chartWidget.model().mainSeries() : null;
+        if (mainSeries) {
+          if (typeof mainSeries.symbol === 'function') mainSeriesSymbol = String(mainSeries.symbol() || '');
+          else if (typeof mainSeries.symbolInfo === 'function') {
+            var info = mainSeries.symbolInfo();
+            mainSeriesSymbol = String((info && (info.symbol || info.full_name)) || '');
+          }
+          if (typeof mainSeries.isLoading === 'function') chartLoading = !!mainSeries.isLoading();
+          if (mainSeries._seriesLoaded != null) {
+            seriesLoaded = typeof mainSeries._seriesLoaded.value === 'function'
+              ? mainSeries._seriesLoaded.value()
+              : !!mainSeries._seriesLoaded;
+          }
+          if (mainSeries._seriesCompleted != null) {
+            seriesCompleted = typeof mainSeries._seriesCompleted.value === 'function'
+              ? mainSeries._seriesCompleted.value()
+              : !!mainSeries._seriesCompleted;
+          }
+          if (mainSeries._seriesStatus != null) {
+            seriesStatus = typeof mainSeries._seriesStatus.value === 'function'
+              ? mainSeries._seriesStatus.value()
+              : mainSeries._seriesStatus;
+          } else if (typeof mainSeries.status === 'function') {
+            seriesStatus = mainSeries.status();
+          }
+          if (mainSeries._symbolResolvingActive != null) {
+            symbolResolvingActive = typeof mainSeries._symbolResolvingActive.value === 'function'
+              ? mainSeries._symbolResolvingActive.value()
+              : !!mainSeries._symbolResolvingActive;
+          }
+        }
+      } catch(e) {}
+      try {
+        var topToolbarSymbolButton = Array.from(document.querySelectorAll('button,[role="button"]')).find(function(el) {
+          if (!el || el.offsetParent === null) return false;
+          var rect = el.getBoundingClientRect();
+          var text = String((el.textContent || '').trim());
+          return rect.y >= 0 && rect.y < 40 && rect.x >= 0 && rect.x < 140 && text && text.length <= 30;
+        });
+        var symbolButton = document.querySelector('[aria-label="Change symbol"]');
+        visibleSymbol = topToolbarSymbolButton
+          ? String((topToolbarSymbolButton.textContent || '').trim())
+          : (symbolButton ? String((symbolButton.textContent || '').trim()) : '');
+      } catch(e) {}
+      try {
+        var legendEl = document.querySelector('[data-name="legend-source-title"]')
+          || document.querySelector('[class*="legend"] [class*="source"]')
+          || document.querySelector('[class*="title"] [class*="apply-common-tooltip"]');
+        legendTitle = legendEl ? String((legendEl.textContent || '').trim()) : '';
+      } catch(e) {}
       var bars = ${BARS_PATH};
-      var quote = { symbol: sym };
+      var quote = {
+        symbol: sym,
+        api_symbol: apiSymbol || sym,
+        main_series_symbol: mainSeriesSymbol,
+        visible_symbol: visibleSymbol,
+        legend_title: legendTitle,
+        document_title: document.title,
+        chart_loading: chartLoading,
+        series_loaded: seriesLoaded,
+        series_completed: seriesCompleted,
+        series_status: seriesStatus,
+        symbol_resolving_active: symbolResolvingActive,
+      };
       if (bars && typeof bars.lastIndex === 'function') {
         var last = bars.valueAt(bars.lastIndex());
         if (last) { quote.time = last[0]; quote.open = last[1]; quote.high = last[2]; quote.low = last[3]; quote.close = last[4]; quote.last = last[4]; quote.volume = last[5] || 0; }
@@ -270,10 +343,29 @@ export async function getQuote({ symbol } = {}) {
       if (ext.description) quote.description = ext.description;
       if (ext.exchange) quote.exchange = ext.exchange;
       if (ext.type) quote.type = ext.type;
+      function normalizeText(value) {
+        return String(value || '')
+          .replace(/^[A-Z]/, '')
+          .replace(/[▲▼+\\-0-9.,% ]+/g, ' ')
+          .replace(/\\s+/g, ' ')
+          .trim()
+          .toUpperCase();
+      }
+      var normalizedSymbols = [quote.symbol, quote.api_symbol, quote.main_series_symbol, quote.visible_symbol]
+        .filter(Boolean)
+        .map(function(v) { return String(v).toUpperCase().split(':').pop(); });
+      quote.symbol_consistent = normalizedSymbols.length <= 1 || normalizedSymbols.every(function(v) { return v === normalizedSymbols[0]; });
+      var descriptionCore = normalizeText(quote.description || '');
+      var legendCore = normalizeText(quote.legend_title || '');
+      quote.legend_matches_symbol = !legendCore || !descriptionCore || legendCore.indexOf(descriptionCore) !== -1 || descriptionCore.indexOf(legendCore) !== -1;
+      quote.series_ready = quote.chart_loading === false && quote.series_loaded !== false && quote.series_completed !== false && quote.symbol_resolving_active !== true;
       return quote;
     })()
   `);
   if (!data || (!data.last && !data.close)) throw new Error('Could not retrieve quote. The chart may still be loading.');
+  if (data.series_ready === false) {
+    throw new Error(`Quote data is not reliable yet: chartLoading=${data.chart_loading}, seriesLoaded=${data.series_loaded}, seriesCompleted=${data.series_completed}, symbolResolvingActive=${data.symbol_resolving_active}`);
+  }
   return { success: true, ...data };
 }
 

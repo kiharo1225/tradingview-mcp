@@ -1,59 +1,83 @@
 /**
  * Core replay mode logic.
  */
-import { evaluate as _evaluate, getReplayApi as _getReplayApi } from '../connection.js';
+import { evaluate as _evaluate, evaluateAsync as _evaluateAsync, getReplayApi as _getReplayApi } from '../connection.js';
 
 export const VALID_AUTOPLAY_DELAYS = [100, 143, 200, 300, 1000, 2000, 3000, 5000, 10000];
+const REPLAY_START_TIMEOUT_MS = 20000;
 
 function wv(path) {
   return `(function(){ var v = ${path}; return (v && typeof v === 'object' && typeof v.value === 'function') ? v.value() : v; })()`;
 }
 
+function withTimeout(promise, timeoutMs, message) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(message)), timeoutMs)),
+  ]);
+}
+
 function _resolve(deps) {
   return {
     evaluate: deps?.evaluate || _evaluate,
+    evaluateAsync: deps?.evaluateAsync || _evaluateAsync,
     getReplayApi: deps?.getReplayApi || _getReplayApi,
   };
 }
 
+async function detectReplayBlocker(evaluate) {
+  return evaluate(`
+    (function() {
+      var paywall = document.querySelector('[data-name="join-for-free-button"]')
+        || document.querySelector('button[data-name="join-for-free-button"]');
+      if (paywall && paywall.offsetParent !== null) {
+        return {
+          type: 'paywall',
+          message: 'Replay is gated by the current TradingView account or browser session. A Join for free modal is blocking replay startup.',
+        };
+      }
+      return null;
+    })()
+  `);
+}
+
 export async function start({ date, _deps } = {}) {
-  const { evaluate, getReplayApi } = _resolve(_deps);
-  const rp = await getReplayApi();
-  const available = await evaluate(wv(`${rp}.isReplayAvailable()`));
-  if (!available) throw new Error('Replay is not available for the current symbol/timeframe');
+  return withTimeout((async () => {
+    const { evaluate, evaluateAsync, getReplayApi } = _resolve(_deps);
+    const rp = await getReplayApi();
+    const available = await evaluate(wv(`${rp}.isReplayAvailable()`), { timeoutMs: 5000 });
+    if (!available) throw new Error('Replay is not available for the current symbol/timeframe');
 
-  await evaluate(`${rp}.showReplayToolbar()`);
+    await evaluate(`${rp}.showReplayToolbar()`, { timeoutMs: 8000 });
 
-  // selectDate() is async — it calls enableReplayMode() then _onPointSelected()
-  // which initializes the server-side replay session. Must be awaited inside the
-  // page context, otherwise the promise is fire-and-forget and replay state says
-  // "started" but stepping doesn't work (issue #26).
-  if (date) {
-    const ts = new Date(date).getTime();
-    if (isNaN(ts)) throw new Error(`Invalid date: "${date}". Use YYYY-MM-DD format.`);
-    await evaluate(`${rp}.selectDate(${ts}).then(function() { return 'ok'; })`);
-  } else {
-    await evaluate(`${rp}.selectFirstAvailableDate()`);
-  }
+    if (date) {
+      const ts = new Date(date).getTime();
+      if (isNaN(ts)) throw new Error(`Invalid date: "${date}". Use YYYY-MM-DD format.`);
+      await evaluateAsync(`${rp}.selectDate(${ts}).then(function() { return 'ok'; })`, { timeoutMs: 15000 });
+    } else {
+      await evaluate(`${rp}.selectFirstAvailableDate()`, { timeoutMs: 15000 });
+    }
 
-  // Poll until replay is fully initialized: isReplayStarted AND currentDate is set.
-  // selectDate()'s promise resolves before the data series is ready, so we need
-  // to wait for currentDate to become non-null before stepping will work.
-  let started = false;
-  let currentDate = null;
-  for (let i = 0; i < 30; i++) {
-    started = await evaluate(wv(`${rp}.isReplayStarted()`));
-    currentDate = await evaluate(wv(`${rp}.currentDate()`));
-    if (started && currentDate !== null) break;
-    await new Promise(r => setTimeout(r, 250));
-  }
+    let started = false;
+    let currentDate = null;
+    for (let i = 0; i < 30; i++) {
+      started = await evaluate(wv(`${rp}.isReplayStarted()`), { timeoutMs: 5000 });
+      currentDate = await evaluate(wv(`${rp}.currentDate()`), { timeoutMs: 5000 });
+      if (started && currentDate !== null) break;
+      await new Promise(r => setTimeout(r, 250));
+    }
 
-  if (!started) {
-    try { await evaluate(`${rp}.stopReplay()`); } catch {}
-    throw new Error('Replay failed to start. The selected date may not have data for this timeframe. Try a more recent date or a higher timeframe (e.g., Daily).');
-  }
+    if (!started) {
+      const blocker = await detectReplayBlocker(evaluate);
+      try { await evaluate(`${rp}.stopReplay()`); } catch {}
+      if (blocker?.type === 'paywall') {
+        throw new Error(blocker.message);
+      }
+      throw new Error('Replay failed to start. The selected date may not have data for this timeframe. Try a more recent date or a higher timeframe (e.g., Daily).');
+    }
 
-  return { success: true, replay_started: true, date: date || '(first available)', current_date: currentDate };
+    return { success: true, replay_started: true, date: date || '(first available)', current_date: currentDate };
+  })(), REPLAY_START_TIMEOUT_MS, `Replay start timed out after ${REPLAY_START_TIMEOUT_MS}ms`);
 }
 
 export async function step({ _deps } = {}) {

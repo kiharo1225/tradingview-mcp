@@ -55,6 +55,26 @@ tv status
 
 ここで接続確認できれば、CDP 経由の基本動作は通っています。
 
+browser モードで再現性を上げたい場合は、確認済みの browser binary を固定して起動できます。
+
+```bash
+node src/cli/index.js launch --mode browser --browser-path "/path/to/chrome-or-edge"
+```
+
+profile も固定したい場合:
+
+```bash
+node src/cli/index.js launch --mode browser --browser-path "/path/to/chrome-or-edge" --browser-profile-dir "/path/to/profile"
+```
+
+さらに簡易確認として:
+
+```bash
+npm run smoke:browser
+```
+
+を使うと、`status` / `quote` / `ohlcv --summary` 相当の read 系がまとまって確認できます。
+
 ## 4. 必要なら MCP サーバーとして起動する
 
 このプロジェクトのサーバー本体は [`src/server.js`](/c:/Users/hayan/git/tradingview-mcp/src/server.js) です。

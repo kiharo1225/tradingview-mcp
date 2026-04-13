@@ -1,7 +1,7 @@
 /**
  * Core chart control logic.
  */
-import { evaluate as _evaluate, evaluateAsync as _evaluateAsync, safeString, requireFinite } from '../connection.js';
+import { evaluate as _evaluate, evaluateAsync as _evaluateAsync, reconnectToMatchingTarget as _reconnectToMatchingTarget, safeString, requireFinite } from '../connection.js';
 import { waitForChartReady as _waitForChartReady } from '../wait.js';
 
 const CHART_API = 'window.TradingViewApi._activeChartWidgetWV.value()';
@@ -10,8 +10,99 @@ function _resolve(deps) {
   return {
     evaluate: deps?.evaluate || _evaluate,
     evaluateAsync: deps?.evaluateAsync || _evaluateAsync,
+    reconnectToMatchingTarget: deps?.reconnectToMatchingTarget || _reconnectToMatchingTarget,
     waitForChartReady: deps?.waitForChartReady || _waitForChartReady,
   };
+}
+
+async function shouldReloadForSymbolRecovery(evaluate, symbol) {
+  const expected = String(symbol || '').toUpperCase().split(':').pop();
+  if (!expected) return false;
+
+  const state = await evaluate(`
+    (function() {
+      var chart = ${CHART_API};
+      var currentSymbol = '';
+      var mainSeriesSymbol = '';
+      var symbolResolvingActive = null;
+      var chartLoading = null;
+      var seriesLoaded = null;
+      var seriesCompleted = null;
+      try {
+        currentSymbol = chart.symbol ? String(chart.symbol() || '') : '';
+        var mainSeries = chart._chartWidget && chart._chartWidget.model ? chart._chartWidget.model().mainSeries() : null;
+        if (mainSeries) {
+          if (typeof mainSeries.symbol === 'function') mainSeriesSymbol = String(mainSeries.symbol() || '');
+          if (typeof mainSeries.isLoading === 'function') chartLoading = !!mainSeries.isLoading();
+          if (mainSeries._symbolResolvingActive != null) {
+            symbolResolvingActive = typeof mainSeries._symbolResolvingActive.value === 'function'
+              ? mainSeries._symbolResolvingActive.value()
+              : !!mainSeries._symbolResolvingActive;
+          }
+          if (mainSeries._seriesLoaded != null) {
+            seriesLoaded = typeof mainSeries._seriesLoaded.value === 'function'
+              ? mainSeries._seriesLoaded.value()
+              : !!mainSeries._seriesLoaded;
+          }
+          if (mainSeries._seriesCompleted != null) {
+            seriesCompleted = typeof mainSeries._seriesCompleted.value === 'function'
+              ? mainSeries._seriesCompleted.value()
+              : !!mainSeries._seriesCompleted;
+          }
+        }
+      } catch (e) {}
+      return {
+        currentSymbol: currentSymbol,
+        mainSeriesSymbol: mainSeriesSymbol,
+        symbolResolvingActive: symbolResolvingActive,
+        chartLoading: chartLoading,
+        seriesLoaded: seriesLoaded,
+        seriesCompleted: seriesCompleted,
+      };
+    })()
+  `);
+
+  const normalize = (value) => String(value || '').toUpperCase().split(':').pop();
+  const matches =
+    normalize(state?.currentSymbol) === expected ||
+    normalize(state?.mainSeriesSymbol) === expected;
+  const stuck =
+    state?.symbolResolvingActive === true ||
+    state?.chartLoading === true ||
+    state?.seriesLoaded === false ||
+    state?.seriesCompleted === false;
+
+  return matches && stuck;
+}
+
+async function reloadForSymbolRecovery(evaluateAsync, waitForChartReady, symbol) {
+  await evaluateAsync(`
+    (function() {
+      setTimeout(function() { window.location.reload(); }, 0);
+      return true;
+    })()
+  `);
+  await new Promise((resolve) => setTimeout(resolve, 12000));
+  const firstReady = await waitForChartReady(symbol, null, 30000);
+  if (!firstReady) return false;
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  return waitForChartReady(symbol, null, 10000);
+}
+
+async function applySymbolChange(evaluateAsync, symbol) {
+  await evaluateAsync(`
+    (function() {
+      var chart = ${CHART_API};
+      var result = chart.setSymbol(${safeString(symbol)}, {});
+      if (result && typeof result.then === 'function') {
+        return Promise.race([
+          result.then(function() { return true; }),
+          new Promise(function(resolve) { setTimeout(function() { resolve(false); }, 3000); }),
+        ]);
+      }
+      return new Promise(function(resolve) { setTimeout(function() { resolve(true); }, 500); });
+    })()
+  `);
 }
 
 export async function getState({ _deps } = {}) {
@@ -38,18 +129,47 @@ export async function getState({ _deps } = {}) {
 }
 
 export async function setSymbol({ symbol, _deps }) {
-  const { evaluateAsync, waitForChartReady } = _resolve(_deps);
-  await evaluateAsync(`
-    (function() {
-      var chart = ${CHART_API};
-      return new Promise(function(resolve) {
-        chart.setSymbol(${safeString(symbol)}, {});
-        setTimeout(resolve, 500);
-      });
-    })()
-  `);
-  const ready = await waitForChartReady(symbol);
-  return { success: true, symbol, chart_ready: ready };
+  const { evaluate, evaluateAsync, reconnectToMatchingTarget, waitForChartReady } = _resolve(_deps);
+  await applySymbolChange(evaluateAsync, symbol);
+  let ready = await waitForChartReady(symbol);
+  let effectiveSymbol = symbol;
+  let fallbackUsed = false;
+  let reloadUsed = false;
+  let targetSwitched = false;
+
+  if (!ready && symbol.includes(':')) {
+    const fallbackSymbol = symbol.split(':').pop();
+    if (fallbackSymbol && fallbackSymbol !== symbol) {
+      await applySymbolChange(evaluateAsync, fallbackSymbol);
+      ready = await waitForChartReady(fallbackSymbol);
+      if (ready) {
+        effectiveSymbol = fallbackSymbol;
+        fallbackUsed = true;
+      }
+    }
+  }
+
+  if (!ready) {
+    targetSwitched = await reconnectToMatchingTarget(effectiveSymbol);
+    if (targetSwitched) {
+      ready = await waitForChartReady(effectiveSymbol, null, 15000);
+    }
+  }
+
+  if (!ready && await shouldReloadForSymbolRecovery(evaluate, effectiveSymbol)) {
+    ready = await reloadForSymbolRecovery(evaluateAsync, waitForChartReady, effectiveSymbol);
+    reloadUsed = ready;
+  }
+
+  return {
+    success: true,
+    symbol,
+    effective_symbol: effectiveSymbol,
+    fallback_used: fallbackUsed,
+    target_switched: targetSwitched,
+    reload_used: reloadUsed,
+    chart_ready: ready,
+  };
 }
 
 export async function setTimeframe({ timeframe, _deps }) {
@@ -197,14 +317,30 @@ export async function scrollToDate({ date }) {
 }
 
 export async function symbolInfo() {
+  const { evaluate } = _resolve();
   const result = await evaluate(`
     (function() {
       var chart = ${CHART_API};
-      var info = chart.symbolExt();
+      var info = chart.symbolExt && chart.symbolExt();
+      if (!info) {
+        return {
+          symbol: chart.symbol ? chart.symbol() : null,
+          full_name: null,
+          exchange: null,
+          description: null,
+          type: null,
+          pro_name: null,
+          typespecs: null,
+          resolution: chart.resolution ? chart.resolution() : null,
+          chart_type: chart.chartType ? chart.chartType() : null,
+          source: 'chart_api_fallback',
+        };
+      }
       return {
         symbol: info.symbol, full_name: info.full_name, exchange: info.exchange,
         description: info.description, type: info.type, pro_name: info.pro_name,
-        typespecs: info.typespecs, resolution: chart.resolution(), chart_type: chart.chartType()
+        typespecs: info.typespecs, resolution: chart.resolution(), chart_type: chart.chartType(),
+        source: 'symbol_ext',
       };
     })()
   `);
