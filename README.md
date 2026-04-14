@@ -190,13 +190,18 @@ Windows + browser モードで確認済みのコマンド:
 - `node src/cli/index.js symbol <ticker>`
 - `node src/cli/index.js timeframe <resolution>`
 - `node src/cli/index.js watchlist get`
+  - 現行 browser UI では `data-symbol-full` ベースで symbol 一覧の取得を確認済みです
+  - 現行 session によっては rows が `pending` のまま残ることがあります。その場合でも `hydration_source: "quote_session"` と `hydrated_count` を返し、quote session から取得できた symbol だけ `last/change/change_percent` を部分補完します
 - `node src/cli/index.js watchlist add <symbol>` の一部
+  - 現行 session では `watchlist_visible_rows: true` と `watchlist_contains_symbol: true` を返し、`state: "confirmed_visible"` まで確認できるケースがあります
 - `node src/cli/index.js indicator get <entity_id>`
 - `node src/cli/index.js indicator toggle <entity_id>`
 - `node src/cli/index.js values`
 - `node src/cli/index.js pane list`
 - `node src/cli/index.js tab list`
 - `node src/cli/index.js layout list`
+- `node src/cli/index.js alert list`
+  - 内部 API が不安定でも、Alerts パネルに「Create alert」が見えている場合は DOM fallback で `state: "no_alerts"` を返します
 - `node src/cli/index.js draw list`
 - `node src/cli/index.js pine get`
 - `node src/cli/index.js pine errors`
@@ -208,7 +213,8 @@ browser モードで部分的に確認済み / 条件つきのコマンド:
 
 - `node src/cli/index.js watchlist add <symbol>`
   - 現在の右ペインが watchlist ビューであることが前提です
-  - 現在は `watchlist_visible_rows` も返し、実際に watchlist 側へ表示反映できたかの手がかりを返します
+  - 現在は `watchlist_visible_rows` と `watchlist_contains_symbol` も返し、実際に watchlist 側へ表示反映できたかの手がかりを返します
+  - 現行 session では `state: "confirmed_visible"` まで確認できるケースがありますが、環境差はまだ残ります
 - `node src/cli/index.js indicator add <name>`
 - `node src/cli/index.js indicator remove <entity_id>`
   - mutation 自体は通りますが、`state` の `studies` 一覧はタイミングにより古い entity が残って見える場合があります
@@ -222,11 +228,13 @@ browser モードで未確認または制約が強いもの:
 - `node src/cli/index.js alert create`
   - account state を変更するため慎重に扱っています
 - `node src/cli/index.js alert delete --all`
-  - 手動確認前提の DOM fallback です
+  - 手動確認前提の DOM fallback で、`state: "manual_confirmation_required"` を返します
 - `node src/cli/index.js layout switch <name>`
-  - 保存済み layout がない環境では未確認です
+  - 保存済み layout がない環境では未確認ですが、存在しない名前に対しては `Layout "<name>" not found.` で安全に失敗します
 - replay 系
   - account / paywall の影響を受けます
+  - 現行 browser session では `replay status` は取得でき、`is_replay_toolbar_visible` / `is_ready_to_play` / `ui_ready_to_play` も返します
+  - 実機では `replay start` は「Bar replay ボタンは見えているが toolbar が visible にならず、replay UI も ready_to_play にならない。TradingView Web の account / sign-in / feature gate が噛んでいる可能性がある」と分かるメッセージで安全に失敗することを確認しています
 
 補足:
 
@@ -235,6 +243,8 @@ browser モードで未確認または制約が強いもの:
 - `symbol` / `pane symbol` は、symbol search や既知のダイアログが残っている session でも recovery を試み、必要に応じて reload fallback を使います。
 - 複数の TradingView page / tab / window が同時にある場合でも、接続時に複数 target を probe して、見ている chart に近い target を優先するようにしています。
 - `status` と `quote` には `visible_symbol_button`, `main_series_symbol`, `legend_title`, `legend_matches_chart`, `legend_matches_symbol`, `chart_loading`, `series_loaded`, `series_completed` などの診断情報が含まれます。browser モードで違和感があるときは、まずこれらを確認してください。
+- `legend_title` は現行 Web UI では `Change symbol` ボタンのタイトルを優先して拾うため、`Apple Inc.` のような銘柄説明と `Vol` のような indicator 名を取り違えにくくしています。
+- `watchlist get` には `pending_count` と `all_pending` も含まれます。値が `null` でも、現時点では parser の問題ではなく widget 側が `pending` だと切り分けしやすくしています。
 - TradingView 側の UI 更新が遅れると、データ自体は正しくても legend や説明ラベルだけ古い銘柄名のまま残る場合があります。このため、README の確認済みは「データ面の一致」と「可視 UI の一致」を分けて見ています。現在は best-effort で legend 同期も試みていますが、環境によっては一時的に stale 表示が残る可能性があります。
 
 ### 3. Claude Code に追加

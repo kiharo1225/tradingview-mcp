@@ -302,6 +302,8 @@ function chartSnapshotExpression() {
         return rect.y >= 0 && rect.y < 40 && rect.x >= 0 && rect.x < 140 && text && text.length <= 30;
       });
     const legendTitle = firstVisibleText([
+      '[data-qa-id="title-wrapper legend-source-title"] button[aria-label="Change symbol"]',
+      'button[aria-label="Change symbol"]',
       '[data-name="legend-source-title"]',
       '[class*="legend"] [class*="source"]',
       '[class*="title"] [class*="apply-common-tooltip"]',

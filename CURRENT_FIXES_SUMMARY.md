@@ -288,15 +288,19 @@ mutation 系の追加確認では、次が分かっています。
 - 一方で `state` の `studies` 一覧はタイミングによって古い entity が残って見えることがあり、CLI 上の見え方と内部 API の見え方に差が出るケースがある
 - 内部 API を直接見ると最終的に `Volume` study は 1 件だけなので、mutation 自体より一覧表示側の整合が残課題
 
-また、`watchlist add AAPL` は現在の browser セッションでは `Add symbol button not found in watchlist panel` で失敗しました。`layout list` は成功するものの空、`alert list` は空配列に加えて `error` を返すケースがあり、`alert delete --all` は手動確認前提の DOM fallback です。
+初期段階では `watchlist add AAPL` は `Add symbol button not found in watchlist panel` で失敗していましたが、その後 `watchlist add` は右ペインの `base` タブを優先して開くように修正し、代表ケースでは `success: true` まで改善しました。さらに `watchlist_visible_rows` を返すようにして、実際に watchlist 側へ表示反映できたかの手がかりも返すようにしました。
 
-その後、`watchlist add` は右ペインの `base` タブを優先して開くように修正し、代表ケースでは `success: true` まで改善しました。さらに `watchlist_visible_rows` を返すようにして、実際に watchlist 側へ表示反映できたかの手がかりも返すようにしました。
+watchlist の読み取りも改善が進み、現行 browser UI では `data-symbol-full` ベースで既存 watchlist の symbol 一覧を 17 件取得できることを確認しています。加えて、現行 session では `watchlist add AAPL` が `watchlist_visible_rows: true`, `watchlist_contains_symbol: true`, `state: "confirmed_visible"` まで返り、追加後の表示確認まで通るケースも取れました。ただし、session 差はまだ残るため、`watchlist_visible_rows` と `watchlist_contains_symbol` を合わせて見る運用は引き続き有効です。
 
-一方で、直後の `watchlist get` は現行 UI ではまだ `empty` / `panel_closed` を返すことがあり、今回の browser セッションでは `watchlist_visible_rows: false` でした。つまり、watchlist の mutation はボタン操作までは進んでも、現行 UI での表示反映確認はまだ弱く、読み取り側の現行 UI 追従も残課題です。
+`layout list` は引き続き成功するものの、現在の session では保存済み layout がなく空です。`layout switch does-not-exist` は `Layout "does-not-exist" not found.` で安全に失敗することも確認しました。`alert list` は内部 API が `error` を返すケースがありますが、現行 session では Alerts パネルの DOM から「Create alert」状態を見て `success: true` / `state: "no_alerts"` にフォールバックできるようになりました。`alert delete --all` は依然として手動確認前提の DOM fallback ですが、いまは `state: "manual_confirmation_required"` を返すので機械的にも扱いやすくなっています。
 
 README には browser モードの verified / partial / blocked を追記し、`MSIX_EXPERIMENT_GUIDE.md` には「本流ではなく調査用の実験メモ」であることを明記しました。
 
-replay についても整理を進めました。`replay status` は browser モードで取得でき、`is_replay_available: true` までは見えますが、`replay start` は現行 session では進まず、現在は `Replay start timed out after 20000ms` として **安全に失敗** するようにしています。少なくとも、以前のような長時間のぶら下がりよりは扱いやすくなっています。
+replay についても整理を進めました。`replay status` は browser モードで取得でき、`is_replay_available`, `is_replay_toolbar_visible`, `is_ready_to_play`, `ui_ready_to_play` まで見えるようにしています。実機では、現在の browser session は `is_replay_toolbar_visible: false`, `is_ready_to_play: false`, `ui_ready_to_play: false` のままで、`replay start` は「toolbar が visible にならず、replay UI も ready_to_play にならない」と分かるメッセージで **安全に失敗** するようにしています。date 指定時の `Promise was collected` や 15000ms timeout も、同じく replay 初期化待ちとして意味のあるメッセージに寄せています。少なくとも、以前のような長時間のぶら下がりよりは扱いやすくなっています。
+
+また、stale legend 判定も改善しました。`Change symbol` ボタンのタイトルを優先して拾うようにしたことで、`status` の `legend_title` が `1Vol∅∅` のような indicator 名ではなく `Apple Inc.` を返し、`legend_matches_chart: true` まで回復しています。`quote` 側の `legend_matches_symbol` も同じく `true` を確認しています。
+
+watchlist についても、いまは top-level に `pending_count` と `all_pending` を返すようにして、価格や騰落率が `null` でも widget 側がまだ `pending` だと切り分けやすくしています。実機では 17 件すべてが `pending` のまま返る session を確認しており、これは parser の失敗ではなく TradingView Web 側の widget 状態と見ています。
 
 ### 3. モーダルが開いたページの扱い
 
@@ -307,3 +311,15 @@ replay についても整理を進めました。`replay status` は browser モ
 残タスクは次を参照します。
 
 - [`BROWSER_PARITY_TASKS.md`](/c:/Users/hayan/git/tradingview-mcp/BROWSER_PARITY_TASKS.md)
+## 2026-04-14 追記
+
+- `watchlist get` に quote session 補完を追加しました。現行 browser session では DOM 側の watchlist rows が `pending` のままでも、`getQuoteSessionInstance()` から取得できた symbol については `last/change/change_percent` を埋められます。
+- 実機では `watchlist get` が `hydration_source: "quote_session"` / `hydrated_count: 1` を返し、`NASDAQ:AAPL` については `last: 260.48`, `change: -0.01`, `change_percent: 0`, `status: "ok"` まで補完できました。
+- まだ全 symbol が埋まるわけではないため、watchlist parity は「一覧取得は安定、価格列は部分補完あり、残りは TradingView Web session 依存」という段階です。
+- `replay start` は引き続き browser session 側の制約を明示した形で安全に失敗します。現在の主な文面は「Bar replay ボタンは visible だが toolbar が出ず、UI も `ready_to_play` にならない。TradingView Web の account / sign-in / feature gate が噛んでいる可能性がある」です。
+- `replay` の内部状態も追加で確認しました。現行 session では `isReplayAvailable=true` でも、`_replayUIController` 側の `isReplayModeEnabled=false` / `readyToPlay=false` のままで、toolbar object 自体は存在しても visible になっていません。現時点では実装バグより TradingView Web session 側 gate の可能性が高いです。
+## 2026-04-14 現在地
+
+- `watchlist get` は partial support のままですが、待機を少し短縮しつつ `quote_session` 補完を維持する形に調整しました。
+- タスク表ベースでは、2026-04-14 時点で追跡していた parity タスクは **完了** または **制約つき完了** の状態まで整理できています。
+- 現在 repo 側に残っている差分の中心は、新しい未実装ではなく、TradingView Web 側の account / feature gate / widget session 変化に対する将来の追従です。

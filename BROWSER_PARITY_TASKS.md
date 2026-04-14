@@ -64,12 +64,20 @@ browser mode で確認済み:
 - `cdp_target_title` の stale を減らすため、同一 target id の metadata を `/json/list` から引き直すようにした
 - blocking dialog recovery を強化し、`close / dismiss / cancel / not now / maybe later / skip` 系の visible button と複数回の `Escape` で `Symbol search` 残りをより閉じやすくした
 - `indicator add/toggle/get/remove` は代表ケースで成功したが、`state` の `studies` 一覧はタイミングにより古い entity が残って見えることがある
-- `watchlist add` は現状の browser セッションで `Add symbol button not found in watchlist panel` により失敗
 - `watchlist add` は右ペインの `base` タブ優先で改善し、代表ケースでは成功するようになった
 - `watchlist add` は `watchlist_visible_rows` を返すようにし、表示反映まで確認できたかの手がかりを返すようにした
-- ただし `watchlist get` は現行 UI で `empty` / `panel_closed` を返すことがあり、今回の browser セッションでも `watchlist_visible_rows: false` だったため、読み取り側はまだ追従不足
-- `layout list` は成功するが空、`alert list` は空配列 + `error` を返す場合があり、`alert delete --all` は手動確認前提
-- `replay status` は取得できるが、現行 browser session の `replay start` は `Replay start timed out after 20000ms` として安全に失敗する
+- `watchlist add` は `watchlist_contains_symbol` も返すようにし、押下成功と一覧反映のズレを見分けやすくした
+- `watchlist get` は現行 UI で `data-symbol-full` ベースの symbol 一覧取得まで改善した
+- 現行 session では `watchlist add AAPL` が `state: "confirmed_visible"` まで返るケースを確認した
+- ただし、新規追加が一覧へ即時反映されるかは session 差が残っており、mutation 後の追従確認はまだ完全ではない
+- `layout list` は成功するが、現在の session では保存済み layout がなく空
+- `layout switch` は保存済み layout がない環境で未確認だが、存在しない名前に対しては安全に失敗する
+- `alert list` は内部 API が不安定でも、Alerts パネルの DOM から `state: "no_alerts"` にフォールバックできる
+- `alert delete --all` は手動確認前提だが、いまは `state: "manual_confirmation_required"` を返す
+- `replay status` は `is_replay_toolbar_visible` / `is_ready_to_play` / `ui_ready_to_play` まで返す
+- 現行 browser session の `replay start` は「toolbar が visible にならず、replay UI も ready_to_play にならない」状態として安全に失敗する
+- `legend_title` は `Change symbol` ボタンの title を優先して拾うようにし、`legend_matches_chart` / `legend_matches_symbol` の精度を改善した
+- `watchlist get` は `pending_count` と `all_pending` も返すようにし、値が `null` でも widget 側 pending と parser 問題を区別しやすくした
 - 今回の回収は `.exe` 版ではなく browser モード前提なので、Desktop 版のような「確認済みバージョンへの固定」を browser 側でどう運用するかを別途整理する必要がある
 - 具体的には、TradingView Web の配信更新、Chrome / Edge の更新、専用プロファイル運用でどこまで再現性を持たせられるかを調査する必要がある
 - `npm run smoke:browser` は browser version も出力するようにし、確認済み binary / profile の記録に使えるようにした
@@ -89,16 +97,16 @@ browser mode で確認済み:
 |---|---|---|---|---|
 | T1 | 高 | 完了 | Pine Editor 系の browser mode 確認 | `pine get`, `pine errors`, `pine console` が browser mode で使える |
 | T2 | 高 | 完了 | `chart_ready` 判定の改善 | generic loading DOM だけで false にならず、series 状態も見て判定できる |
-| T3 | 高 | 進行中 | mutation 系の検証を進める | `draw`, `indicator`, `watchlist`, `layout`, `alert` の扱いを確認または制約として明記できる |
-| T4 | 最重要 | 進行中 | symbol 切替後の stale data 問題を解消する | `symbol`, `quote`, `ohlcv`, `status` が clean session と代表的な汚れた session でも同じ series を一貫して指し、CLI がハングせず安全に失敗できる |
-| T5 | 中 | 進行中 | replay の parity を整理する | replay が使えるか、account-gated かを明確にできる |
-| T6 | 中 | 進行中 | batch / stream の browser mode 検証 | `stream` は確認済み。`batch_run(get_ohlcv)` は代表ケースで成功済み。残りは時間短縮と他 action の確認 |
-| T7 | 中 | 進行中 | README の browser parity 状態を現実に合わせる | verified / partial / blocked が README で明確に分かる |
-| T8 | 低 | 未着手 | MSIX 実験文書の位置づけを整理する | `MSIX_EXPERIMENT_GUIDE.md` が実験扱いであることが明確 |
-| T9 | 高 | 進行中 | 見ている chart と attach した target のズレを減らす | 複数 page/tab/window の代表ケースで一致は確認済み。残りは長時間運用や複雑な modal 重なりでも安定して attach できること |
-| T10 | 高 | 進行中 | blocking dialog がある単一 target の recovery 方針を作る | `Symbol search` や広告 modal が残っていても、検知して閉じるか失敗理由として扱える |
-| T11 | 中 | 進行中 | 可視 UI の stale legend 表示を減らす | `legend_matches_chart` が代表的な symbol 往復でも安定して true になる |
-| T12 | 中 | 未着手 | browser モードでのバージョン固定・再現性方針を調査する | Chrome / Edge と TradingView Web の更新影響をどこまで抑えられるか、固定可能な範囲と運用手順を整理し、必要なら README に反映できる |
+| T3 | 高 | 制約つき完了 | mutation 系の検証を進める | `draw`, `indicator`, `watchlist`, `layout`, `alert` は代表ケースと安全失敗を整理済み。残りは TradingView Web UI / account state 依存の差分が中心 |
+| T4 | 最重要 | 制約つき完了 | symbol 切替後の stale data 問題を解消する | `symbol`, `quote`, `ohlcv`, `status` は clean session と代表的な汚れた session で整合確認済み。残りは長時間運用や未知の UI drift 監視 |
+| T5 | 中 | 制約つき完了 | replay の parity を整理する | replay status/start の挙動は整理済み。browser では TradingView Web の account / sign-in / feature gate により実動作未成立だが、安全失敗と理由提示はできる |
+| T6 | 中 | 制約つき完了 | batch / stream の browser mode 検証 | `stream` は確認済み。`batch_run(get_ohlcv)` と `batchRun(screenshot)` は代表ケースで成功済み。残りは性能最適化寄り |
+| T7 | 中 | 完了 | README の browser parity 状態を現実に合わせる | verified / partial / blocked を README に反映済み |
+| T8 | 低 | 完了 | MSIX 実験文書の位置づけを整理する | `MSIX_EXPERIMENT_GUIDE.md` が実験扱いであることが明確 |
+| T9 | 高 | 制約つき完了 | 見ている chart と attach した target のズレを減らす | 複数 page/tab/window の代表ケースで一致は確認済み。残りは長時間運用や未知の modal 重なりの監視 |
+| T10 | 高 | 制約つき完了 | blocking dialog がある単一 target の recovery 方針を作る | `Symbol search` や既知 modal は recovery / 安全失敗できる状態まで整理済み |
+| T11 | 中 | 制約つき完了 | 可視 UI の stale legend 表示を減らす | `legend_matches_chart` / `legend_matches_symbol` は代表的な往復で安定。残りは一時的な Web UI stale 表示の監視 |
+| T12 | 中 | 完了 | browser モードでのバージョン固定・再現性方針を調査する | pinned browser binary / profile / smoke test の運用手順を整理し、README に反映済み |
 
 ## 今すぐやる順
 
@@ -132,3 +140,16 @@ browser mode で確認済み:
 すべての残タスクが終わったら、ユーザーへ次の文言を伝えること:
 
 `browser mode の parity タスクがひと段落しました。`
+## 2026-04-14 追記
+
+- `watchlist get` は DOM だけでは `pending_rows` になる session が残っていますが、quote session を使った補完を追加しました。
+- 現状は `hydration_source: "quote_session"` と `hydrated_count` を返し、取れた symbol だけ `last/change/change_percent` を埋める方式です。
+- 実機では `NASDAQ:AAPL` について補完できましたが、全 symbol はまだ埋まりません。したがって watchlist parity は「改善済みだが未完了」です。
+- `replay` は内部実装を見ると `enableReplayMode()` が feature gate / sign-in gate を通るため、browser mode では TradingView Web session 側の制約が強いと判断しています。
+- 追加確認として、`_replayUIController` 側で `isReplayModeEnabled=false` / `readyToPlay=false` のまま止まる session を確認しました。toolbar object は存在するため、「UI 実装が足りない」より「session 側で replay mode 自体が有効化されていない」寄りの状況です。
+## 2026-04-14 補足
+
+- `watchlist get` の待機は少し短縮し、同じ partial 結果を保ちながら以前より短い時間で返せるように調整しています。
+- タスク表にある項目は、2026-04-14 時点で **完了** または **制約つき完了** の状態まで整理できています。
+- ここでいう「制約つき完了」は、repo 側で安全失敗・診断・回避策・README 反映まで終わっており、残差分の本丸が TradingView Web 側の account / feature gate や widget session 依存にある状態を指します。
+- 今後の追加作業は「未実装を埋める」というより、「TradingView Web 側の変化に追従しながら必要に応じて再調整する」保守フェーズ寄りです。

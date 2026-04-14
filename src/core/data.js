@@ -307,7 +307,9 @@ export async function getQuote({ symbol } = {}) {
           : (symbolButton ? String((symbolButton.textContent || '').trim()) : '');
       } catch(e) {}
       try {
-        var legendEl = document.querySelector('[data-name="legend-source-title"]')
+        var legendEl = document.querySelector('[data-qa-id="title-wrapper legend-source-title"] button[aria-label="Change symbol"]')
+          || document.querySelector('button[aria-label="Change symbol"]')
+          || document.querySelector('[data-name="legend-source-title"]')
           || document.querySelector('[class*="legend"] [class*="source"]')
           || document.querySelector('[class*="title"] [class*="apply-common-tooltip"]');
         legendTitle = legendEl ? String((legendEl.textContent || '').trim()) : '';

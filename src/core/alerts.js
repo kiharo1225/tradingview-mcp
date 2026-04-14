@@ -100,7 +100,45 @@ export async function list() {
       })
       .catch(function(e) { return { alerts: [], error: e.message }; })
   `);
-  return { success: true, alert_count: result?.alerts?.length || 0, source: 'internal_api', alerts: result?.alerts || [], error: result?.error };
+  const alerts = result?.alerts || [];
+  const rawError = result?.error || null;
+  const error = rawError === 'error' ? 'TradingView alert API returned error' : rawError;
+  if (error) {
+    const domFallback = await evaluate(`
+      (function() {
+        var area = document.querySelector('[class*="layout__area--right"]') || document.body;
+        var text = (area.textContent || '').trim();
+        var hasCreatePrompt = /Create alert/i.test(text) && /get started/i.test(text);
+        var alertRows = area.querySelectorAll('[data-alert-id]');
+        return {
+          has_create_prompt: hasCreatePrompt,
+          alert_row_count: alertRows.length,
+          panel_text: text.slice(0, 200),
+        };
+      })()
+    `).catch(() => null);
+
+    if (domFallback?.has_create_prompt && (domFallback?.alert_row_count || 0) === 0) {
+      return {
+        success: true,
+        alert_count: 0,
+        source: 'dom_fallback',
+        alerts: [],
+        error: null,
+        state: 'no_alerts',
+        panel_text: domFallback.panel_text || '',
+      };
+    }
+  }
+
+  return {
+    success: !error,
+    alert_count: alerts.length,
+    source: 'internal_api',
+    alerts,
+    error,
+    state: error ? 'api_error' : (alerts.length > 0 ? 'alerts_found' : 'no_alerts'),
+  };
 }
 
 export async function deleteAlerts({ delete_all }) {
@@ -117,7 +155,13 @@ export async function deleteAlerts({ delete_all }) {
         return { context_menu_opened: false };
       })()
     `);
-    return { success: true, note: 'Alert deletion requires manual confirmation in the context menu.', context_menu_opened: result?.context_menu_opened || false, source: 'dom_fallback' };
+    return {
+      success: true,
+      note: 'Alert deletion requires manual confirmation in the context menu.',
+      context_menu_opened: result?.context_menu_opened || false,
+      source: 'dom_fallback',
+      state: 'manual_confirmation_required',
+    };
   }
   throw new Error('Individual alert deletion not yet supported. Use delete_all: true.');
 }
